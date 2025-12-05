@@ -223,21 +223,39 @@ def esvm(encs_test, encs_train, C=1000):
 
 
     # set up labels
-    # TODO
+    encs_test = np.asarray(encs_test, dtype=np.float32)
+    encs_train = np.asarray(encs_train, dtype=np.float32)
+
+    n_neg = encs_train.shape[0]
+    D = encs_train.shape[1]
+
+    # 所有 E-SVM 共享同一套标签：
+    # 第 0 个样本 = 正样本(当前 query)，其余 M 个 = 负样本
+    y = np.zeros(n_neg + 1, dtype=np.int32)
+    y[0] = 1
 
     def loop(i):
-        # compute SVM 
-        # and make feature transformation
-        # TODO
-        return x
+        # 组装当前这个 query 的训练数据：
+        # X = [encs_test[i]; encs_train]
+        x_pos = encs_test[i][None, :]  # 1 x D
+        X = np.vstack([x_pos, encs_train])  # (1 + M) x D
 
-    # let's do that in parallel: 
-    # if that doesn't work for you, just exchange 'parmap' with 'map'
-    # Even better: use DASK arrays instead, then everything should be
-    # parallelized
-    new_encs = list(parmap( loop, tqdm(range(len(encs_test)))))
-    new_encs = np.concatenate(new_encs, axis=0)
-    # return new encodings
+        # 训练 Linear SVM：1 vs all-negatives
+        clf = LinearSVC(C=C, class_weight='balanced', max_iter=10000)
+        clf.fit(X, y)
+
+        # 取出权重向量 w 作为新的 feature
+        w = clf.coef_.reshape(-1)  # (D,)
+
+        # L2 归一化
+        w = w / (np.linalg.norm(w) + 1e-12)
+
+        return w[None, :]  # 返回 1 x D，方便后面 concatenate
+
+    # 并行地对每一个 test 样本做上面的操作
+    new_encs = list(parmap(loop, tqdm(range(len(encs_test)))))
+    new_encs = np.concatenate(new_encs, axis=0)  # N x D
+
     return new_encs
 
 
@@ -305,13 +323,13 @@ if __name__ == '__main__':
                                          args.labels_train)
     print('#train: {}'.format(len(files_train)))
     if not os.path.exists('mus.pkl.gz'):
-        max_descs = 50000
+        max_descs = 500000
         print('> load random descriptors')
         descriptors = loadRandomDescriptors(files_train, max_descs)
         print('> loaded {} descriptors:'.format(len(descriptors)))
         # cluster centers
         print('> compute dictionary')
-        mus = dictionary(descriptors, n_clusters=20)
+        mus = dictionary(descriptors, n_clusters=100)
         # print('mus shape:', mus.shape)
         # import sys
         #
@@ -356,7 +374,8 @@ if __name__ == '__main__':
 
     print('> esvm computation')
     # TODO
-
+    enc_test = esvm(enc_test, enc_train, C=args.C)
     # eval
-    evaluate(enc_test, labels_test)
     print('> evaluate')
+    evaluate(enc_test, labels_test)
+
