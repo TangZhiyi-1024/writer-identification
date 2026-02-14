@@ -1,6 +1,7 @@
 import os
 import shlex
 import argparse
+import glob
 from tqdm import tqdm
 
 # for python3: read in python2 pickled files
@@ -10,6 +11,7 @@ import gzip
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import Ridge
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import normalize
 import numpy as np
 import cv2
@@ -37,7 +39,35 @@ def parseArgs(parser):
                         help='regularization parameter of GMP')
     parser.add_argument('--C', default=1000, type=float, 
                         help='C parameter of the SVM')
+    parser.add_argument('--n_clusters', default=100, type=int,
+                        help='number of visual words (for multi-VLAD)')
+    parser.add_argument('--max_descs', default=500000, type=int,
+                        help='random descriptors for dictionary training (for multi-VLAD)')
+    parser.add_argument('--multi_vlad', action='store_true',
+                        help='run multi-VLAD + PCA whitening experiment')
+    parser.add_argument('--n_codebooks', default=5, type=int,
+                        help='number of codebooks for multi-VLAD')
+    parser.add_argument('--pca_dim', default=1000, type=int,
+                        help='target dimensions after PCA whitening')
+    parser.add_argument('--seed', default=42, type=int,
+                        help='base random seed for multi-VLAD codebooks')
     return parser
+
+def _build_file_index(folder):
+    """
+    Build stem->path index by scanning folder recursively.
+    """
+    index = {}
+    for root, _, files in os.walk(folder):
+        for fn in files:
+            name = fn
+            for p in ['.pkl.gz', '.txt', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.ocvmb', '.csv']:
+                if name.endswith(p):
+                    name = name[:-len(p)]
+                    break
+            if name not in index:
+                index[name] = os.path.join(root, fn)
+    return index
 
 def getFiles(folder, pattern, labelfile):
     """ 
@@ -53,9 +83,9 @@ def getFiles(folder, pattern, labelfile):
         all_lines = f.readlines()
     
     # get filenames from labelfile
+    file_index = _build_file_index(folder)
     all_files = []
     labels = []
-    check = True
     for line in all_lines:
         # using shlex we also allow spaces in filenames when escaped w. ""
         splits = shlex.split(line)
@@ -70,10 +100,60 @@ def getFiles(folder, pattern, labelfile):
 
         # get now new file name
         true_file_name = os.path.join(folder, file_name + pattern)
+        if not os.path.exists(true_file_name):
+            if file_name in file_index:
+                true_file_name = file_index[file_name]
+            else:
+                matches = glob.glob(os.path.join(folder, '**', file_name + '.*'), recursive=True)
+                if len(matches) > 0:
+                    true_file_name = matches[0]
         all_files.append(true_file_name)
         labels.append(class_id)
 
     return all_files, labels
+
+def computeDescs(filename):
+    """
+    Compute SIFT descriptors from image with:
+    - keypoint angle fixed to 0
+    - Hellinger normalization (l1, then sign-sqrt)
+    """
+    img = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise IOError('could not load image: {}'.format(filename))
+
+    sift = cv2.SIFT_create()
+    keypoints = sift.detect(img, None)
+    if not keypoints:
+        return np.zeros((0, 128), dtype=np.float32)
+
+    keypoints0 = [
+        cv2.KeyPoint(
+            x=kp.pt[0], y=kp.pt[1], size=kp.size, angle=0.0,
+            response=kp.response, octave=kp.octave, class_id=kp.class_id
+        )
+        for kp in keypoints
+    ]
+    _, desc = sift.compute(img, keypoints0)
+    if desc is None or len(desc) == 0:
+        return np.zeros((0, 128), dtype=np.float32)
+
+    desc = np.asarray(desc, dtype=np.float32)
+    l1 = np.sum(np.abs(desc), axis=1, keepdims=True) + 1e-12
+    desc = desc / l1
+    desc = np.sign(desc) * np.sqrt(np.abs(desc))
+    return desc
+
+def loadDescriptors(filename):
+    """
+    Unified loader:
+    - precomputed .pkl.gz descriptors
+    - descriptors computed from image file
+    """
+    if filename.endswith('.pkl.gz'):
+        with gzip.open(filename, 'rb') as ff:
+            return np.asarray(cPickle.load(ff, encoding='latin1'), dtype=np.float32)
+    return computeDescs(filename)
 
 def loadRandomDescriptors(files, max_descriptors):
     """ 
@@ -84,33 +164,42 @@ def loadRandomDescriptors(files, max_descriptors):
     returns: QxD matrix of descriptors
     """
     # let's just take 100 files to speed-up the process
-    max_files = 100
-    indices = np.random.permutation(max_files)
+    max_files = min(100, len(files))
+    indices = np.random.permutation(len(files))[:max_files]
     files = np.array(files)[indices]
-   
+
     # rough number of descriptors per file that we have to load
-    max_descs_per_file = int(max_descriptors / len(files))
+    max_descs_per_file = max(1, int(max_descriptors / max(1, len(files))))
 
     descriptors = []
+    missing = 0
+    missing_example = None
     for i in tqdm(range(len(files))):
-        with gzip.open(files[i], 'rb') as ff:
-            # for python2
-            # desc = cPickle.load(ff)
-            # for python3
-            desc = cPickle.load(ff, encoding='latin1')
-            
-        # get some random ones
+        if not os.path.exists(files[i]):
+            missing += 1
+            if missing_example is None:
+                missing_example = files[i]
+            continue
+        desc = loadDescriptors(files[i])
+        if desc is None or len(desc) == 0:
+            continue
+
         indices = np.random.choice(len(desc),
-                                   min(len(desc),
-                                       int(max_descs_per_file)),
+                                   min(len(desc), int(max_descs_per_file)),
                                    replace=False)
-        desc = desc[ indices ]
+        desc = desc[indices]
         descriptors.append(desc)
-    
+
+    if len(descriptors) == 0:
+        if missing > 0:
+            print('warning: {} sampled files are missing on disk.'.format(missing))
+            print('example missing path: {}'.format(missing_example))
+        raise RuntimeError('No descriptors could be loaded from the provided files.')
+
     descriptors = np.concatenate(descriptors, axis=0)
     return descriptors
 
-def dictionary(descriptors, n_clusters):
+def dictionary(descriptors, n_clusters, random_state=None):
     """ 
     return cluster centers for the descriptors 
     parameters:
@@ -121,6 +210,7 @@ def dictionary(descriptors, n_clusters):
     kmeans = MiniBatchKMeans(
         n_clusters=n_clusters,
         batch_size=10000,
+        random_state=random_state,
         verbose=1
     )
     kmeans.fit(descriptors)
@@ -167,11 +257,17 @@ def vlad(files, mus, powernorm, gmp=False, gamma=1000):
     returns: NxK*D matrix of encodings
     """
     K = mus.shape[0]
+    Dm = mus.shape[1]
     encodings = []
 
     for f in tqdm(files):
-        with gzip.open(f, 'rb') as ff:
-            desc = cPickle.load(ff, encoding='latin1')
+        if not os.path.exists(f):
+            encodings.append(np.zeros(K * Dm, dtype=np.float32))
+            continue
+        desc = loadDescriptors(f)
+        if desc is None or len(desc) == 0:
+            encodings.append(np.zeros(K * Dm, dtype=np.float32))
+            continue
         a = assignments(desc, mus)
         
         T,D = desc.shape
@@ -189,7 +285,18 @@ def vlad(files, mus, powernorm, gmp=False, gamma=1000):
             diff = desc[idx] - mus[k]  # (#idx, D)
 
             # sum pooling: 求和得到 1×D
-            v_k = diff.sum(axis=0)  # shape: (D,)
+            if gmp:
+                y = np.ones(len(idx), dtype=np.float32)
+                reg = Ridge(
+                    alpha=gamma,
+                    fit_intercept=False,
+                    solver='sparse_cg',
+                    max_iter=500
+                )
+                reg.fit(diff, y)
+                v_k = reg.coef_.astype(np.float32)
+            else:
+                v_k = diff.sum(axis=0)  # shape: (D,)
 
             # 把 v_k 放到 f_enc 对应段落
             start = k * D
@@ -257,6 +364,40 @@ def esvm(encs_test, encs_train, C=1000):
 
     new_encs = np.concatenate(new_encs_list, axis=0)  # N x D
     return new_encs
+
+def l2norm_rows(X):
+    X = np.asarray(X, dtype=np.float32)
+    n = np.linalg.norm(X, axis=1, keepdims=True) + 1e-12
+    return X / n
+
+def build_codebooks(files_train, n_codebooks, n_clusters, max_descs, suffix_tag, seed):
+    codebooks = []
+    for i in range(n_codebooks):
+        local_seed = seed + i
+        np.random.seed(local_seed)
+        mus_i_name = 'mus_{}_cb{}_k{}_seed{}.pkl.gz'.format(
+            suffix_tag, i, n_clusters, local_seed
+        )
+        if os.path.exists(mus_i_name):
+            with gzip.open(mus_i_name, 'rb') as f:
+                mus_i = cPickle.load(f)
+        else:
+            print('> [multi-vlad] load random descriptors for codebook {}'.format(i))
+            desc_i = loadRandomDescriptors(files_train, max_descs)
+            print('> [multi-vlad] compute dictionary {}'.format(i))
+            mus_i = dictionary(desc_i, n_clusters=n_clusters, random_state=local_seed)
+            with gzip.open(mus_i_name, 'wb') as fOut:
+                cPickle.dump(mus_i, fOut, -1)
+        codebooks.append(np.asarray(mus_i, dtype=np.float32))
+    return codebooks
+
+def compute_multi_vlad(files, codebooks, powernorm, gmp, gamma):
+    all_parts = []
+    for i, mus_i in enumerate(codebooks):
+        print('> [multi-vlad] encode with codebook {}'.format(i))
+        part = vlad(files, mus_i, powernorm, gmp, gamma)
+        all_parts.append(part)
+    return np.concatenate(all_parts, axis=1).astype(np.float32)
 
 
 def distances(encs):
@@ -374,3 +515,53 @@ if __name__ == '__main__':
     # eval
     print('> evaluate (E-SVM)')
     evaluate(enc_test_esvm, labels_test)
+
+    if args.multi_vlad:
+        suffix_tag = args.suffix.replace('.', '_')
+        print('> [multi-vlad] build/load codebooks')
+        codebooks = build_codebooks(
+            files_train=files_train,
+            n_codebooks=args.n_codebooks,
+            n_clusters=args.n_clusters,
+            max_descs=args.max_descs,
+            suffix_tag=suffix_tag,
+            seed=args.seed
+        )
+
+        mode_tag = 'gmp{}'.format(args.gamma) if args.gmp else 'sum'
+        mv_tag = 'mvlad{}_k{}_{}'.format(args.n_codebooks, args.n_clusters, mode_tag)
+        mv_train_name = 'enc_train_{}_from_{}.pkl.gz'.format(mv_tag, suffix_tag)
+        mv_test_name = 'enc_test_{}_from_{}.pkl.gz'.format(mv_tag, suffix_tag)
+
+        if not os.path.exists(mv_train_name) or args.overwrite:
+            print('> [multi-vlad] compute train encodings')
+            enc_train_mv = compute_multi_vlad(files_train, codebooks, args.powernorm, args.gmp, args.gamma)
+            with gzip.open(mv_train_name, 'wb') as fOut:
+                cPickle.dump(enc_train_mv, fOut, -1)
+        else:
+            with gzip.open(mv_train_name, 'rb') as f:
+                enc_train_mv = cPickle.load(f)
+
+        if not os.path.exists(mv_test_name) or args.overwrite:
+            print('> [multi-vlad] compute test encodings')
+            enc_test_mv = compute_multi_vlad(files_test, codebooks, args.powernorm, args.gmp, args.gamma)
+            with gzip.open(mv_test_name, 'wb') as fOut:
+                cPickle.dump(enc_test_mv, fOut, -1)
+        else:
+            with gzip.open(mv_test_name, 'rb') as f:
+                enc_test_mv = cPickle.load(f)
+
+        pca_dim = min(args.pca_dim, enc_train_mv.shape[0], enc_train_mv.shape[1])
+        print('> [multi-vlad] PCA whitening to {} dims'.format(pca_dim))
+        pca = PCA(n_components=pca_dim, whiten=True, random_state=args.seed)
+        pca.fit(enc_train_mv)
+        enc_train_mv_pca = l2norm_rows(pca.transform(enc_train_mv))
+        enc_test_mv_pca = l2norm_rows(pca.transform(enc_test_mv))
+
+        print('> [multi-vlad] evaluate')
+        evaluate(enc_test_mv_pca, labels_test)
+
+        print('> [multi-vlad] esvm computation')
+        enc_test_mv_esvm = esvm(enc_test_mv_pca, enc_train_mv_pca, C=args.C)
+        print('> [multi-vlad] evaluate (E-SVM)')
+        evaluate(enc_test_mv_esvm, labels_test)

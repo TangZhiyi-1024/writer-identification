@@ -1,0 +1,46 @@
+b) VLAD encoding
+1.VLAD
+Top-1 accuracy: 0.8088888888888889
+mAP: 0.6152223071464045
+
+2.VLAD + E-SVM
+Top-1 accuracy: 0.8752777777777778
+mAP: 0.7312331555978365
+
+c) VLAD normalization
+1.powernorm 
+Top-1 accuracy: 0.8227777777777778 
+mAP: 0.631193829682697
+
+2.powernorm + E-SVM
+Top-1 accuracy: 0.8883333333333333 
+mAP: 0.7531866308699767
+
+
+e) Extract your own features
+1.SIFT(angle=0 + Hellinger) + VLAD
+Top-1: 0.8138888888888889
+mAP: 0.6259014502866087
+
+2.SIFT(angle=0 + Hellinger) + VLAD + E-SVM
+Top-1: 0.88
+mAP: 0.7418451042762445
+
+
+f) Generalized max pooling
+1.GMP（without E-SVM）
+Top-1: 0.8419444444444445
+mAP: 0.6570043912197342
+
+2.GMP + E-SVM（with E-SVM）
+Top-1: 0.9016666666666666
+mAP: 0.7804934402744353
+
+g) Generalized max pooling 
+1.multi-VLAD + PCA(1000), without E-SVM
+Top-1: 0.8727777777777778
+mAP: 0.7285764097284915
+
+2.multi-VLAD + PCA(1000) + E-SVM
+Top-1: 0.8794444444444445
+mAP: 0.7416866941253932
