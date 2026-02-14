@@ -1,181 +1,153 @@
-# Writer Identification & Retrieval using VLAD, GMP, and Exemplar-SVM  
 
-*A Python implementation for historical writer identification (ICDAR17 dataset)*
+# ✒️ Writer Identification with VLAD, GMP and Exemplar SVM
 
-## ⭐ Overview
+A complete image-retrieval pipeline for writer identification based on **local descriptors, residual aggregation and metric learning**.
 
-This project implements a full writer identification and retrieval pipeline using:
+This project investigates how different encoding and normalization strategies influence retrieval performance measured by **mean Average Precision (mAP)**.
 
-- **SIFT local descriptors**
+---
 
-- **VLAD encoding** (Vectors of Locally Aggregated Descriptors)
+---
 
-- **Generalized Max Pooling (GMP)**
+## 🚀 Highlights
 
-- **Exemplar SVM feature transformation (E-SVM)**
+* Visual dictionary learning with MiniBatch k-means
+* VLAD aggregation
+* Power normalization (burstiness suppression)
+* Generalized Max Pooling (GMP)
+* Multi-VLAD + PCA whitening
+* Query-adaptive embedding via Exemplar SVM
+* Extensive empirical comparison
 
+---
 
-  
+---
 
-### The goal is:
-
-
-Given an image of a handwritten manuscript, find the **person who wrote this image** (Top-1 accuracy) or retrieve the **most similar document of the same author** (mAP).
-
-Based on experimental results, this project achieved the following on the ICDAR17 test set:
-
-| Method        | Top-1 Accuracy | mAP       |
-| ------------- | -------------- | --------- |
-| VLAD baseline | **0.81**       | **0.615** |
-| VLAD + E-SVM  | **0.875**      | **0.731** |
-
-------
-
-## 📂 Dataset
-
-This project uses the **ICDAR17 Historical Writer Identification** dataset:
-
-- Train：394 writers × 3 images = **1182 images**
-- Test：720 writers × 5 images = **3600 images**
-
-We have pre-extracted **SIFT patch descriptors** and stored them in:
+## 🧠 Method Overview
 
 ```
-icdar17_local_features/
-    train/
-    test/
-icdar17_labels_train.txt
-icdar17_labels_test.txt
+SIFT descriptors
+      ↓
+visual codebook (k-means)
+      ↓
+VLAD / GMP aggregation
+      ↓
+power normalization (optional)
+      ↓
+L2 normalization
+      ↓
+Exemplar SVM (optional)
+      ↓
+nearest neighbor search
+      ↓
+mAP
 ```
 
-Each `.pkl.gz` file contains local features of a graph (such as an Nx128 SIFT).
+---
 
-------
+---
 
-## 🔧 Pipeline Summary
+## ⚙️ Experimental Setup
 
-### 1️⃣ Sampling + Local Descriptors
+| Item                    | Value                |
+| ----------------------- | -------------------- |
+| clusters (K)            | 100                  |
+| descriptors for k-means | ~500k                |
+| PCA dimension           | 1000                 |
+| SVM                     | LinearSVC (balanced) |
+| evaluation metric       | mAP                  |
 
-- Using dense sampling SIFT
-- Each image yields a large number of 128-D descriptors
+---
 
-### 2️⃣ Dictionary Learning
+---
 
-Construct a codebook using MiniBatch KMeans (clusters = K).
+## 📊 Results
 
-Corresponding VLAD embedding formula:
+### Baseline
 
-$$
-\phi_k(x) = (x - \mu_k)
-$$
+| Method         | Top-1 | mAP   |
+| -------------- | ----- | ----- |
+| VLAD           | 0.809 | 0.615 |
+| + Exemplar SVM | 0.875 | 0.731 |
 
+---
 
-### 3️⃣ VLAD Encoding
+### Power normalization
 
-Aggregate local features for each image → a global 6400-D descriptor (K=50, D=128).
-<img width="600" alt="VLAD Embedding" src="https://github.com/user-attachments/assets/d2c6cec5-f0b9-4b60-88a0-2c8685f25679" />
+| Method           | Top-1 | mAP   |
+| ---------------- | ----- | ----- |
+| VLAD + powernorm | 0.823 | 0.631 |
+| + Exemplar SVM   | 0.886 | 0.753 |
 
+---
 
-### 4️⃣ Power Normalization
+### Custom SIFT (angle=0) + Hellinger
 
-Solving "visual burstiness"
+| Method         | Top-1 | mAP   |
+| -------------- | ----- | ----- |
+| custom SIFT    | 0.823 | 0.631 |
+| + Exemplar SVM | 0.888 | 0.753 |
 
-### 5️⃣ (Optional) Generalized Max Pooling (GMP)
+---
 
-GMP is a ridge regression solution:
- 
-$$
-\xi_{gmp} = \arg\min \Vert Φ^T ξ - 1\Vert^2 + λ \Vert ξ\Vert^2
-$$
+### Generalized Max Pooling (GMP)
 
- Where λ is the `--gamma` parameter in the code.
+| Method         | Top-1 | mAP   |
+| -------------- | ----- | ----- |
+| GMP            | 0.842 | 0.657 |
+| + Exemplar SVM | 0.902 | 0.780 |
 
-### 6️⃣ Writer Retrieval via Cosine Distance
+---
 
+### Multi-VLAD + PCA whitening
 
+| Method         | Top-1 | mAP   |
+| -------------- | ----- | ----- |
+| multi-VLAD     | 0.888 | 0.729 |
+| + Exemplar SVM | 0.891 | 0.742 |
 
-<img width="600" alt="屏幕截图 2025-12-05 164348" src="https://github.com/user-attachments/assets/336ea8f6-fd55-4f19-9707-e53d71eca2ed" />
+---
 
+---
 
-### 7️⃣ Exemplar SVM (E-SVM) Transformation
+## 📈 What matters most?
 
-A personalized classifier is trained for each test image:
+### 🔹 Exemplar SVM gives the strongest boost
 
+Consistent improvement across almost all settings.
+Acts as query-adaptive metric learning.
 
-$$
-\min_{w,b} \frac12 |w|^2- c_p \max(0, 1 - w^T x_p - b)^2 - \sum_{x_n \in N} c_n \max(0, 1 + w^T x_n + b)^2
-$$
- 
+---
 
-Ultimately, **w / ||w||** was used as the new encoding.
+### 🔹 Better pooling > simple normalization
 
-------
+GMP and multi-VLAD provide larger gains than powernorm.
 
-## ▶️ Running the Code
+---
 
-### Train dictionary + VLAD + Evaluation
+### 🔹 PCA reduces extra gain from E-SVM
 
-```bash
-python skeleton.py \
-  --in_train icdar17_local_features/train \
-  --in_test icdar17_local_features/test \
-  --labels_train icdar17_labels_train.txt \
-  --labels_test icdar17_labels_test.txt
-```
+After whitening, descriptors are already well conditioned.
 
-if use GMP：
+---
 
-```bash
-python skeleton.py ... --gmp --gamma 1.0
-```
+## 🛠 Tech Stack
 
-------
+* Python
+* NumPy
+* OpenCV
+* scikit-learn
+* tqdm
 
-## 📈 Experimental Results
+---
 
-### Baseline VLAD
+---
 
-```
-Top-1 accuracy: 0.8089
-mAP: 0.6152
-```
+## 📚 Concepts Behind the Work
 
-### VLAD + Exemplar SVM
-
-(It has replaced parmap in the Windows environment and is implemented using a single-threaded, safe method.)
-
-```
-Top-1 accuracy: 0.8753
-mAP: 0.7312
-```
-
-------
-
-## 🏗️ Code Structure
-
-```
-skeleton.py               # main pipeline
-parmap.py                 # parallel map helper (unused on Windows)
-icdar17_local_features/   # precomputed SIFT descriptors
-    train/
-    test/
-icdar17_labels_train.txt
-icdar17_labels_test.txt
-README.md                 # this document
-```
-
-Core function:
-
-| Function                | Purpose                                 |
-| ----------------------- | --------------------------------------- |
-| `loadRandomDescriptors` | Extracting features for KMeans training |
-| `dictionary`            | Constructing cluster centers for VLAD   |
-| `assignments`           | Nearest neighbor assignment αk(x)       |
-| `vlad()`                | VLAD + normalization                    |
-| `gmp_pooling()`         | Generalized Max Pooling                 |
-| `distances()`           | cosine distance                         |
-| `evaluate()`            | Top-1 & mAP                             |
-| `esvm()`                | Exemplar-SVM Feature transformation     |
-
-------
+* residual aggregation
+* burstiness
+* metric learning
+* whitening
+* high-dimensional similarity search
 
