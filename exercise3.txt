@@ -36,7 +36,7 @@ mAP: 0.6570043912197342
 Top-1: 0.9016666666666666
 mAP: 0.7804934402744353
 
-g) Generalized max pooling 
+g) PCA whitening and multi-VLAD
 1.multi-VLAD + PCA(1000), without E-SVM
 Top-1: 0.8727777777777778
 mAP: 0.7285764097284915
